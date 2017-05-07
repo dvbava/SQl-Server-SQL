@@ -1,2 +1,281 @@
 http://edo-van-asseldonk.blogspot.co.uk/2013/01/autofac-and-multiple-implementations-of.html
 
+
+Autofac and multiple implementations of an interface
+
+How can we use Autofac to inject multiple implementations of an interface into a class, and how can we choose a specific implementation?
+
+Let's say we have this interface for an object with which you can view files:
+
+public interface IViewer
+{
+   void View(string filename);
+}
+
+
+And we have multiple implementations:
+
+public class PdfViewerLarge : IViewer
+{
+   public void View(string filename)
+   {
+      // Do something smart
+   }
+}
+
+public class PdfViewerSmall : IViewer
+{
+   public void View(string filename)
+   {
+      // Do something smart
+   }
+}
+
+
+public class XlsViewerLarge : IViewer
+{
+   public void View(string filename)
+   {
+      // Do something smart
+   }
+}
+
+
+public class XlsViewerSmall : IViewer
+{
+   public void View(string filename)
+   {
+      // Do something smart
+   }
+}
+
+As you can see we have four Viewers. How can we use Autofac to inject these Viewers into a class?
+First let's register the Viewers with Autofac, in an MVC3 website:
+
+var builder = new ContainerBuilder();
+builder.RegisterControllers(typeof (MvcApplication).Assembly);
+builder.RegisterType<PdfViewerBig>().As<IViewer>();
+builder.RegisterType<PdfViewerSmall>().As<IViewer>();
+builder.RegisterType<XlsViewerSmall>().As<IViewer>();
+var container = builder.Build();
+
+Autofac will automatically put all viewers into an IEnumerable<IViewer>, which you can resolve like this:
+
+var viewers = container.Resolve<IEnumerable<IViewer>>();
+
+And we can easily use this in an MVC3 website like this:
+
+public class HomeController : Controller
+{
+   private readonly IEnumerable<IViewer> _viewers;
+
+   public HomeController(IEnumerable<IViewer> viewers)
+   {
+   _viewers = viewers;
+   }
+
+   public ActionResult Index()
+   {
+      foreach(var viewer in _viewers)
+      {
+         viewer.View("filename.pdf");
+      }
+
+      return View();
+   }
+}
+
+
+How to choose a specific implementation from a collection?
+The example above of the HomeController is pretty stupid, as we're using each viewer to view a document, even if the viewer is not suited for the filetype. What we realy want is something like:
+
+var viewer = _viewers.Single(it => it.Filetype == ".pdf");
+viewer.View("file.pdf");
+
+There are multiple ways to do this. These are the three I like:
+1. Use an enum value with autofac
+2. Use Metadata with Autofac
+3. Use Metadata within each Viewer
+
+
+Enum value with Autofac
+If you can think of a way to describe every viewer with an enum then this is a good option. It works like this;
+
+Declare an enum:
+
+public enum ViewerType { PdfLarge, PdfSmall, XlsLarge, XlsSmall }
+
+Next register the type using the enum with Autofac:
+
+
+builder.RegisterType<PdfViewerLarge>()
+   .Keyed<IViewer>(ViewerType.PdfLarge);
+
+
+builder.RegisterType<PdfViewerSmall>()
+   .Keyed<IViewer>(ViewerType.PdfSmall);
+
+
+builder.RegisterType<XlsViewerLarge>()
+   .Keyed<IViewer>(ViewerType.XlsLarge);
+
+
+builder.RegisterType<XlsViewerSmall>()
+   .Keyed<IViewer>(ViewerType.XlsSmall);
+
+In an MVC Controller the Viewers will be injected like this:
+
+public class HomeController : Controller
+{
+   private readonly IIndex<ViewerType, IViewer> _viewers;
+
+   public HomeController(IIndex<ViewerType, IViewer> viewers)
+   {
+      _viewers = viewers;
+   }
+}
+
+
+Now we can use this way to select the desired implementation in an ActionMethod :
+
+public ActionResult Index()
+{
+   var viewer = _viewers[ViewerType.PdfLarge];
+
+   // do something with viewer
+
+   return View();
+}
+
+
+Metadata with Autofac
+Autofac provides a way to add metadata to registered services:
+
+builder.Register(c => new PdfViewerLarge())
+   .As<IViewer>()
+   .WithMetadata("FileType", ".pdf");
+
+We can also use strong typed metadata. First we have to define which metadatakeys we have:
+
+public interface IViewerMetadata
+{
+    string FileType { get; }
+    long MaxFileSize { get; }
+}
+
+Now we can use this metadata to register a type:
+
+builder.RegisterType<XlsViewerSmall>()
+   .As<IViewer>()
+   .WithMetadata<IViewerMetadata>(m =>
+      {
+         m.For(p => p.MaxFileSize, 10000);
+         m.For(p => p.FileType, ".xls");
+       });
+
+In an MVC Controller the Viewers will be injected like this:
+
+public class HomeController : Controller
+{
+   private IEnumerable<Meta<IViewer, IViewerMetadata>> _viewers;
+
+   public HomeController(
+             IEnumerable<Meta<IViewer, IViewerMetadata>> viewers)
+   {
+      _viewers = viewers;
+   }
+}
+
+Now we can use this way to select the desired implementation in an ActionMethod :
+
+public ActionResult Index()
+{
+   var viewer = _viewers.Single(
+                   it => it.Metadata.FileType == ".xls" &&
+                   it.Metadata.MaxFileSize > 1000
+                               ).Value;
+
+
+   // do something with viewer
+
+   return View();
+}
+
+
+
+Metadata inside an implementation
+Another option to store metadata is inside the implementation itself. This is the way it works:
+
+First we take an implementation, for example the PdfViewerLarge.
+
+
+public class PdfViewerLarge : IViewer
+{
+   public void View(string filename)
+   {
+      // Do something smart
+   }
+}
+
+
+We have to add the metadata to it, as public properties. But first add the metadata to the interface:
+
+public interface IViewer
+{
+   string FileType {get;}
+   long MaxFileSize {get;}
+   void View(string filename);
+}
+
+Next we can implement it:
+
+
+
+public class PdfViewerLarge : IViewer
+{
+
+   public string FileType
+   {
+      get { return ".pdf"; }
+   }
+   
+   public long MaxFileSize
+
+   {
+      get { return 1000000; }
+   }
+
+
+
+   public void View(string filename)
+   {
+      // Do something smart
+   }
+}
+
+When we register the type in Autofac we don't have to include any metadata:
+
+
+builder.RegisterType<XlsViewerSmall>()
+   .As<IViewer>();
+
+But we can still use metadata in our Actionmethod:
+
+
+public ActionResult Index()
+{
+
+   var viewer = _viewers.Single(
+                   it => it.Value.FileType == ".xls" &&
+                   it.Value.MaxFileSize > 1000
+                                ).Value;
+
+
+   // do something with viewer
+
+   return View();
+}
+
+
+One drawback of this method is that every type has to be instanciated first. If creating a new instance of a specific implementation is an expensive operation, the other two options are preferable.
+
